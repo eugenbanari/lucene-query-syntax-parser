@@ -1,0 +1,248 @@
+/**
+ * syntax-parser.peg is a set of rules written in formal language to parse Elasticsearch/Lucene queries.
+ * To generate this parser for javascript use https://pegjs.org/online
+ */
+
+// Initialization block
+{
+  const buildNode = (type) => {
+    const { start, end } = location();
+    let value = text();
+    if(Array.isArray(value)) {
+      value = value.join('');
+    }
+    return {
+      type: type ? type : 'unknown',
+      text: value,
+      start,
+      end
+    }
+  };
+
+  const buildEof = () => {
+    const { start, end } = location();
+    let value = text();
+    return {
+      type: type.eof,
+      text: value,
+      start: {...start, offset: start.offset + 1, column: start.column + 1},
+      end: {...end, offset: end.offset + 1, column: end.column + 1}
+    }
+  };
+
+  const toUnkown = (node) => {
+    if(node && node.type) {
+      return { ...node, type: type.unknown };
+    }
+    return node;
+  }
+
+  const isWhitespace = (nodes) => {
+    if(nodes) {
+      let node = nodes;
+      if(Array.isArray(nodes) && nodes.length === 1) {
+        node = nodes[0];
+      }
+      return node.type === type.whitespace;
+    }
+    return false;
+  };
+
+  const clean = (nodes, depth = 1) => {
+    if(Array.isArray(nodes)) {
+      return nodes.flat(depth).filter(node => node);
+    }
+
+    return nodes;
+  };
+
+  const type = {
+    eof: 'eof',
+    eol: 'eol',
+    field: 'field',
+    value: 'value',
+    unknown: 'unknown',
+    operator: 'operator',
+    whitespace: 'whitespace',
+    conjunction: 'conjunction'
+  };
+
+  const isNotNil = value => {
+    return value !== null && value !== undefined;
+  };
+}
+
+
+start = value:(( SubExpression / Expression / Any )* ( EOF { return buildEof(); }) ) { return clean( value, 2 ) }
+
+Any = . { return buildNode()  }
+
+SubExpression = value:(OpeningRoundBracket ExpressionSurrounded ClosingRoundBracket) {
+  return clean(value);
+}
+
+ExpressionSurrounded = value:Expression* { return isWhitespace(value) ? toUnkown(value[0]) : clean(value); }
+
+FieldValueExpression = value:(Field Colon Value?) { return clean(value) }
+
+FieldRangeExpression = value:(Field RangeOperator Value?) { return clean(value) }
+
+LuceneRangeExpression
+  = value:(
+    Field Colon OpeningRangeBracket OptionalSpace
+    ( LuceneRangeValue !( OptionalSpace AnyLuceneRangeLiteral ) / ( OptionalSpace AnyLuceneRangeLiteral )* { return buildNode() })
+    ToKeyword?
+    ( LuceneRangeValue !( OptionalSpace AnyLuceneRangeLiteral ) / ( OptionalSpace AnyLuceneRangeLiteral )* { return buildNode() })
+    OptionalSpace ClosingRangeBracket
+  ) { return clean(value) }
+
+AnyLuceneRangeLiteral = AnyLuceneRangeChar+ { return text() }
+AnyLuceneRangeChar = !OpeningRangeBracket !ClosingRangeBracket !Space !EOL !To char:. { return char }
+LuceneRangeValue = QuotedString / !Keyword !ToKeyword LuceneRangeUnquotedLiteral
+
+Expression
+  = LuceneOperators ( SubExpression / LuceneRangeExpression / FieldRangeExpression / FieldValueExpression / Value )
+  / LuceneOperators { return buildNode(); }
+  / Keyword (RangeOperator / Colon ) { return buildNode(); } // conjunctions cannot be fields, ie: `AND:value`
+  / SubExpression
+  / LuceneRangeExpression
+  / FieldRangeExpression
+  / FieldValueExpression
+  / !Keyword Literal  // Value
+  / Keyword
+  / MandatorySpace
+  / !OpeningRoundBracket !ClosingRoundBracket any:Any { return any } // leave parens to SubExpression
+
+
+
+Field = field:Literal { return { ...field, type: 'field' } }
+
+Value = !Keyword Literal / ( Or / And / Not / To / LuceneOr / LuceneAnd ) { return buildNode() }
+
+LuceneOperators = ('+' / '-' / '!') { return buildNode(type.operator) }
+
+LuceneRangeUnquotedLiteral = LuceneRangeUnquotedCharacter+ { return buildNode(type.value) }
+
+LuceneRangeSpecialCharacter = [\\()<>"*{}\[\]]
+
+LuceneRangeUnquotedCharacter
+  = EscapedWhitespace
+  / '\\ ' { return ' '; } // Escaped space
+  / '\\' char:LuceneRangeSpecialCharacter { return char; } // Escaped Special Character
+  / EscapedKeyword // Escaped keyword
+  / '\\' char:. { return char; } // Escaped any other char
+  / Wildcard
+  / !LuceneRangeSpecialCharacter !Space !EOL char:. { return char; }
+
+
+Literal = QuotedString / UnquotedLiteral
+
+UnquotedLiteral = UnquotedCharacter+ { return buildNode(type.value) }
+
+UnquotedCharacter
+  = EscapedWhitespace
+  / '\\ ' { return ' '; } // Escaped space
+  / EscapedSpecialCharacter // Escaped Special Character
+  / EscapedKeyword // Escaped keyword
+  / '\\' char:. { return char; }  // Escaped any other char
+  / Wildcard
+  / !SpecialCharacter !Space !EOL char:. { return char; }
+
+Wildcard = '*'
+
+SpecialCharacter = [\\():<>"*{}\[\]]
+
+EscapedSpecialCharacter = '\\' char:SpecialCharacter { return char }
+
+ToKeyword = StrictDelimiter To StrictDelimiter;
+NotKeyword = Delimiter Not StrictDelimiter;
+
+Keyword
+  = ( NotKeyword  / Conjunction ) ( Delimiter ( (And / Or / LuceneAnd / LuceneOr) { return buildNode() } ) StrictDelimiter )
+  / Delimiter ( Not  MandatorySpace  LuceneOperators { return buildNode() }  )
+  / NotKeyword
+  / Conjunction
+
+  // conjunction conjunction
+  // not conjunction
+  // not + / ! / -
+
+Conjunction = Delimiter ( And / Or / LuceneAnd / LuceneOr ) StrictDelimiter
+
+Not = 'NOT' { return buildNode(type.conjunction) }
+
+And = 'AND' { return buildNode(type.conjunction) }
+
+Or = 'OR' { return buildNode(type.conjunction) }
+
+To = 'TO' { return buildNode(type.conjunction) }
+
+LuceneAnd = '&&' { return buildNode(type.conjunction) }
+
+LuceneOr = '||' { return buildNode(type.conjunction) }
+
+
+OpeningRoundBracket = '(' { return buildNode(type.operator) }
+
+ClosingRoundBracket = ')' { return buildNode(type.operator) }
+
+OpeningRangeBracket = ( '{' / '[' ) { return buildNode(type.operator) }
+
+ClosingRangeBracket = ( '}' / ']' ) { return buildNode(type.operator) }
+
+SpecialDelimiterChars = [()<>":{}\[\]]
+
+Delimiter = OptionalSpace / &SpecialDelimiterChars / EOF / BOF
+
+StrictDelimiter = MandatorySpace / &SpecialDelimiterChars / EOF / BOF
+
+EscapedKeyword = '\\' keyword:('OR' / 'AND' / 'NOT' / '||' / '&&') { return keyword }
+
+Colon = value:(OptionalSpace ( ':'  { return buildNode(type.operator) } ) OptionalSpace) { return clean(value) }
+
+RangeOperator
+  = value:(
+      OptionalSpace ( (':<=' / ':>=' / ':<' / ':>') { return buildNode(type.operator) } ) OptionalSpace
+    ) { return clean(value ) }
+
+Space = [\ \t] { return buildNode(type.whitespace) }
+
+EOL = [\r\n] { return buildNode(type.eol) }
+
+Spaces = [\ \t]+ { return buildNode(type.whitespace) }
+
+EOLs = [\r\n]+  { return buildNode(type.eol) }
+
+OptionalSpace
+  = value:(Spaces / EOLs )* {
+    value = clean(value);
+    return value && value.length ? value : undefined
+  }
+
+MandatorySpace
+  = value:(Spaces / EOLs / Space / EOL )+ {
+    value = clean(value);
+    return value && value.length ? value : undefined
+  }
+
+
+QuotedString = '"' chars:QuotedCharacter* '"' { return buildNode(type.value) }
+
+QuotedCharacter
+  = EscapedWhitespace
+  / '\\' char:[\\"] { return char; }
+  / char:[^"] { return char; }
+
+EscapedWhitespace
+  = '\\t' { return '\t'; }
+  // / '\\r' { return '\r'; }
+  // / '\\n' { return '\n'; }
+  / '\\r' { return buildNode(type.eol); }
+  / '\\n' { return buildNode(type.eol); }
+
+
+EOF = !.
+
+BOF = &{ return location().start.offset === 0 }
+
+VOID = &. // experiment

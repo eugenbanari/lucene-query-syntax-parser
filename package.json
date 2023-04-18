@@ -1,0 +1,27 @@
+{
+  "name": "lucene-query-syntax-parser",
+  "description": "Lucene query syntax parser",
+  "main": "lib/lucene-query-syntax-parser.js",
+  "version": "1.0.0",
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "29.5.0",
+    "pegjs": "0.10.0"
+  },
+  "author": {
+    "name": "Eugen Banari",
+    "url": "git://github.com/eugenbanari/lucene-query-syntax-parser.git"
+  },
+  "keywords": [
+    "lucene",
+    "elasticsearch",
+    "query",
+    "syntax",
+    "parser"
+  ],
+  "scripts": {
+    "build": "node_modules/pegjs/bin/pegjs --format umd --optimize speed --output lib/lucene-query-syntax-parser.js src/lucene-query-syntax.grammar",
+    "test": "jest",
+    "prepublish": "npm run-script build && npm test"
+  }
+}
